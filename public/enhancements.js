@@ -169,11 +169,11 @@
     },
     {
       kind: "timeframe",
-      match: /Last 7 days|Last 30 days|Quarter to date|Year to date/,
-      options: ["Last 7 days", "Last 30 days", "Quarter to date", "Year to date"],
+      match: /Today|Last 7 days|Last 30 days|Quarter to date|Year to date/,
+      options: ["Today", "Last 7 days", "Last 30 days", "Quarter to date", "Year to date"],
     },
   ];
-  const globalComparisonPattern = /^(vs\. Previous period|vs\. Target|vs\. Same period LY|No comparison)$/;
+  const globalComparisonPattern = /^(vs\. Yesterday|vs\. Previous period|vs\. Target|vs\. Same period LY|No comparison)$/;
 
   const subpagePresentation = {
     "/branches": { title: "Branch Comparison" },
@@ -978,12 +978,17 @@
     return null;
   }
 
+  function previousComparisonLabel() {
+    if (appState.comparison === "vs. Yesterday") return "Yesterday";
+    if (appState.comparison === "vs. Same period LY") return "Same period LY";
+    if (appState.comparison === "vs. Target") return "Target comparison";
+    return "Previous period";
+  }
+
   function currentComparisonLegend(meta) {
     return meta.legend.map((item) => {
       if (item.key !== "previous") return item;
-      if (appState.comparison === "vs. Same period LY") return { ...item, label: "Same period LY" };
-      if (appState.comparison === "vs. Target") return { ...item, label: "Target comparison" };
-      return { ...item, label: "Previous period" };
+      return { ...item, label: previousComparisonLabel() };
     });
   }
 
@@ -1218,7 +1223,7 @@
           ]
         : [
             { className: "overview-chart-mark--current", label: "Current period" },
-            { className: "overview-chart-mark--previous", label: "Previous period" },
+            { className: "overview-chart-mark--previous", label: previousComparisonLabel() },
             { className: "overview-chart-mark--target", label: "Target" },
           ];
 
@@ -1564,9 +1569,11 @@
     const branchOffset = branchModifiers[appState.branch] ?? 0;
     const branchScale = appState.branch === "All Network Branches" ? 1 : Math.max(0.38, 0.62 + branchOffset / 12);
     const timeframeScale =
-      appState.timeframe === "Last 7 days"
-        ? 0.28
-        : appState.timeframe === "Quarter to date"
+      appState.timeframe === "Today"
+        ? 0.04
+        : appState.timeframe === "Last 7 days"
+          ? 0.28
+          : appState.timeframe === "Quarter to date"
           ? 1.8
           : appState.timeframe === "Year to date"
             ? 5.6
@@ -2187,22 +2194,33 @@
   }
 
   function rangeForTimeframe(timeframe) {
+    if (timeframe === "Today") return "Daily";
     if (timeframe === "Last 7 days") return "Daily";
     if (timeframe === "Quarter to date") return "Weekly";
     if (timeframe === "Year to date") return "Yearly";
     return "Monthly";
   }
 
+  function setGlobalTimeframe(timeframe) {
+    appState.timeframe = timeframe;
+    if (timeframe === "Today") {
+      appState.comparison = "vs. Yesterday";
+    } else if (appState.comparison === "vs. Yesterday") {
+      appState.comparison = "vs. Previous period";
+    }
+  }
+
   function setTrendRange(card, range) {
     card.dataset.trendRange = range;
-    appState.timeframe =
+    setGlobalTimeframe(
       range === "Daily"
         ? "Last 7 days"
         : range === "Weekly"
           ? "Quarter to date"
           : range === "Yearly"
             ? "Year to date"
-            : "Last 30 days";
+            : "Last 30 days",
+    );
     runWithObserverPaused(() => {
       updateRangePicker(card);
       updateGlobalControlLabels();
@@ -2809,13 +2827,15 @@
       item.setAttribute("aria-checked", String(appState[control.kind] === option));
       item.textContent = option;
       item.addEventListener("click", () => {
-        appState[control.kind] = option;
         if (control.kind === "timeframe") {
+          setGlobalTimeframe(option);
           const mappedRange = rangeForTimeframe(option);
           document.querySelectorAll(".trend-range-picker").forEach((picker) => {
             const card = picker.closest(".rounded-2xl");
             if (card) card.dataset.trendRange = mappedRange;
           });
+        } else {
+          appState[control.kind] = option;
         }
         setButtonLabel(button, option);
         closeControlMenus();
@@ -4189,7 +4209,7 @@
           </div>
           <div class="v2-mini-legend">
             <span><i style="--legend-color:var(--color-primary)"></i> ARPOB (₹k)</span>
-            <span><i style="--legend-color:#d99016"></i> EBITDA margin</span>
+            <span><i style="--legend-color:#f97316"></i> EBITDA margin</span>
           </div>
         </div>
         <div class="v2-combo-chart" role="img" aria-label="ARPOB bars and EBITDA margin line by month">
@@ -4659,6 +4679,49 @@
     return Array.from({ length: 7 }, (_, index) => Math.max(0, previous + movement * index + last * pulse[index]));
   }
 
+  function ceoRevenueRangeValues(item, index, range) {
+    const values = item.values || [];
+    const last = Number(values.at(-1) || 0);
+    const previous = Number(values.at(-2) || last);
+    if (range === "Daily") {
+      const dailyBase = Math.max(1, (last + previous) / 14);
+      if (item.tone === "target") return [1.02, 1.02, 1.02, 1.02, 1.02, 1.02, 1.02].map((factor) => dailyBase * factor);
+      const patterns = [
+        [0.88, 1.02, 0.95, 1.16, 0.98, 1.22, 1.06],
+        [1.04, 0.9, 1.08, 0.96, 0.92, 1.06, 0.98],
+      ];
+      return patterns[index % patterns.length].map((factor) => dailyBase * factor);
+    }
+    if (range === "Weekly") {
+      const weeklyBase = Math.max(1, last / 4.3);
+      if (item.tone === "target") return [0.98, 1, 1.01, 1.02, 1.03, 1.03].map((factor) => weeklyBase * factor);
+      const patterns = [
+        [0.86, 1.08, 0.98, 1.16, 1.03, 1.24],
+        [0.94, 0.9, 1.04, 0.97, 1.1, 1.02],
+      ];
+      return patterns[index % patterns.length].map((factor) => weeklyBase * factor);
+    }
+    if (range === "Monthly") {
+      const monthlyBase = Math.max(1, last || previous);
+      if (item.tone === "target") return [0.9, 0.92, 0.94, 0.96, 0.98, 1, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07].map((factor) => monthlyBase * factor);
+      const patterns = [
+        [0.76, 0.9, 0.86, 1.02, 0.94, 1.08, 1.0, 1.18, 1.1, 1.24, 1.16, 1.3],
+        [0.68, 0.78, 0.74, 0.86, 0.82, 0.94, 0.9, 1.02, 0.98, 1.08, 1.04, 1.14],
+      ];
+      return patterns[index % patterns.length].map((factor) => monthlyBase * factor);
+    }
+    if (range === "Yearly") {
+      const yearlyBase = Math.max(1, last || previous);
+      if (item.tone === "target") return [0.58, 0.66, 0.74, 0.84, 0.94, 1.05].map((factor) => yearlyBase * factor);
+      const patterns = [
+        [0.48, 0.57, 0.71, 0.82, 0.96, 1.18],
+        [0.43, 0.52, 0.62, 0.74, 0.86, 0.98],
+      ];
+      return patterns[index % patterns.length].map((factor) => yearlyBase * factor);
+    }
+    return ceoRangeValues(values, range);
+  }
+
   function ceoWeeklyValues(values) {
     const source = values.length >= 6 ? values.slice(-6) : Array.from({ length: 6 }, (_, index) => values[index % Math.max(values.length, 1)] || 0);
     return source.map(Number);
@@ -4679,12 +4742,13 @@
 
   function ceoRangeData(title, labels, series) {
     const range = ceoSelectedRange(title);
+    const isRevenueTrend = /revenue trend/i.test(title || "");
     return {
       range,
       labels: ceoRangeLabels(range, labels),
-      series: series.map((item) => ({
+      series: series.map((item, index) => ({
         ...item,
-        values: ceoRangeValues(item.values || [], range),
+        values: isRevenueTrend ? ceoRevenueRangeValues(item, index, range) : ceoRangeValues(item.values || [], range),
       })),
     };
   }
@@ -4704,7 +4768,7 @@
     return `
       <div class="ceo-scan-legend" aria-label="Chart legend">
         ${series
-          .map((item) => `<span><i class="ceo-scan-legend-dot ceo-scan-legend-dot--${escapeHtml(item.tone)}"></i>${escapeHtml(item.label)}</span>`)
+          .map((item) => `<span><i class="ceo-scan-legend-dot ceo-scan-legend-dot--${escapeHtml(item.tone)}" ${item.color ? `style="background:${escapeHtml(item.color)};"` : ""}></i>${escapeHtml(item.label)}</span>`)
           .join("")}
       </div>
     `;
@@ -4753,7 +4817,7 @@
         return;
       }
 
-      const Component = config.type === "bar" ? charts.n : config.type === "donut" ? charts.t : charts.i;
+      const Component = config.type === "bar" ? charts.n : config.type === "donut" ? charts.t : config.type === "capacity" ? charts.c : config.type === "bullet" ? charts.d : config.type === "bedStack" ? charts.e : charts.i;
       if (!Component) return;
 
       if (config.type === "bar" && config.props?.colorBy === "branch") {
@@ -4781,15 +4845,47 @@
     host.dataset.ceoTooltipBound = "true";
     const tooltip = ensureCeoChartTooltip(card);
     const isTrend = host.classList.contains("ceo-recharts-host--trend");
+    const isCapacity = host.classList.contains("ceo-recharts-host--capacity");
+    const isDialysisBullet = host.classList.contains("ceo-recharts-host--dialysis-bullet");
+    const isBedStack = host.classList.contains("coo-recharts-host--beds");
+    const barShapes = () => Array.from(host.querySelectorAll("path.recharts-rectangle"));
 
-    const fallbackRows = (point) => [
-      {
-        label: props?.valueLabel || "Value",
-        value: point?.value,
-        display: ceoTooltipValue(point?.value, props?.unit || ""),
-        color: point?.color || "var(--color-primary)",
-      },
-    ];
+    const setActiveBar = (index) => {
+      const bars = barShapes();
+      if (!bars.length || index < 0) return;
+      host.classList.add("is-bar-focus");
+      bars.forEach((bar, barIndex) => {
+        const isActive = barIndex % data.length === index;
+        bar.classList.toggle("is-active-bar", isActive);
+        bar.classList.toggle("is-muted-bar", !isActive);
+      });
+    };
+
+    const clearActiveBar = () => {
+      host.classList.remove("is-bar-focus");
+      barShapes().forEach((bar) => {
+        bar.classList.remove("is-active-bar", "is-muted-bar");
+      });
+    };
+
+    const fallbackRows = (point) => {
+      if (isBedStack) {
+        return [
+          { label: "Occupied", display: `${Number(point?.occupied || 0).toFixed(1)}%`, color: "var(--color-primary)" },
+          { label: "Cleaning", display: `${Number(point?.cleaning || 0).toFixed(1)}%`, color: "#f5b544" },
+          { label: "Available", display: `${Number(point?.available || 0).toFixed(1)}%`, color: "color-mix(in srgb, var(--color-muted-foreground) 18%, var(--color-surface))" },
+          { label: "Blocked", display: `${Number(point?.blocked || 0).toFixed(1)}%`, color: "var(--color-destructive)" },
+        ];
+      }
+      return [
+        {
+          label: props?.valueLabel || "Value",
+          value: point?.value,
+          display: ceoTooltipValue(point?.value, props?.unit || ""),
+          color: point?.color || "var(--color-primary)",
+        },
+      ];
+    };
 
     const pointRows = (point) => {
       const rows = Array.isArray(point?.__tooltipRows) ? point.__tooltipRows : fallbackRows(point);
@@ -4802,41 +4898,60 @@
       const selector = shape.classList.contains("recharts-sector") ? "path.recharts-sector" : "path.recharts-rectangle";
       const shapes = Array.from(host.querySelectorAll(selector));
       const index = shapes.indexOf(shape);
-      return index >= 0 ? data[index] : null;
+      return index >= 0 ? { point: data[index % data.length], index: index % data.length, isBar: selector.includes("rectangle") } : null;
     };
 
     const render = (event) => {
-      if (!isTrend) {
-        const point = shapePoint(event);
-        if (!point) {
+      if (isDialysisBullet) {
+        const rect = host.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const plotLeft = 42;
+        const plotRight = 42;
+        const usableWidth = Math.max(1, rect.width - plotLeft - plotRight);
+        const cursorX = Math.max(0, Math.min(usableWidth, event.clientX - rect.left - plotLeft));
+        const index = Math.max(0, Math.min(data.length - 1, Math.round((cursorX / usableWidth) * (data.length - 1))));
+        const point = data[index] || {};
+        setActiveBar(index);
+        showCeoChartTooltip(card, tooltip, event, point.name || "", pointRows(point));
+        return;
+      }
+
+      if (!isTrend && !isCapacity) {
+        const match = shapePoint(event);
+        if (!match?.point) {
           tooltip.hidden = true;
+          clearActiveBar();
           return;
         }
-        showCeoChartTooltip(card, tooltip, event, point.name || props?.title || "", pointRows(point));
+        if (match.isBar) setActiveBar(match.index);
+        showCeoChartTooltip(card, tooltip, event, match.point.name || props?.title || "", pointRows(match.point));
         return;
       }
 
       const rect = host.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const plotLeft = 42;
-      const plotRight = 12;
+      const plotRight = isCapacity ? 42 : 12;
       const usableWidth = Math.max(1, rect.width - plotLeft - plotRight);
       const cursorX = Math.max(0, Math.min(usableWidth, event.clientX - rect.left - plotLeft));
       const index = Math.max(0, Math.min(data.length - 1, Math.round((cursorX / usableWidth) * (data.length - 1))));
       const point = data[index] || {};
+      if (isCapacity) setActiveBar(index);
       showCeoChartTooltip(card, tooltip, event, point.name || "", pointRows(point));
     };
 
     host.addEventListener("mousemove", render);
     host.addEventListener("mouseleave", () => {
       tooltip.hidden = true;
+      clearActiveBar();
     });
   }
 
   function attachCeoStaticTooltips(scope = document) {
+    const tooltipSelector = "[data-ceo-tooltip-rows], [data-ceo-branch-donut-segments]";
     const targets = [
-      ...(scope.matches?.("[data-ceo-tooltip-rows]") ? [scope] : []),
-      ...Array.from(scope.querySelectorAll?.("[data-ceo-tooltip-rows]") || []),
+      ...(scope.matches?.(tooltipSelector) ? [scope] : []),
+      ...Array.from(scope.querySelectorAll?.(tooltipSelector) || []),
     ];
     const cards = [...new Set(targets.map((target) => target.closest(".ceo-scan-card")).filter(Boolean))];
 
@@ -4870,8 +4985,8 @@
     });
   }
 
-  function ceoTrendChartContent({ title, labels, series, min = 0, max, unit = "", legend = true }) {
-    const ranged = ceoRangeData(title, labels, series);
+  function ceoTrendChartContent({ title, labels, series, min = 0, max, unit = "", legend = true, fixedRange = false }) {
+    const ranged = fixedRange ? { labels, series } : ceoRangeData(title, labels, series);
     labels = ranged.labels;
     series = ranged.series;
     const targetSeries = series.find((item) => item.tone === "target");
@@ -4889,7 +5004,7 @@
         label: item.label,
         value: point[item.key],
         display: ceoTooltipValue(point[item.key], unit),
-        color: ceoChartColor(item.tone, seriesIndex),
+        color: item.color || ceoChartColor(item.tone, seriesIndex),
       }));
       if (targetSeries) {
         const targetValue = targetSeries.values[index];
@@ -4905,10 +5020,11 @@
     const chartSeries = keyedSeries.map((item, index) => ({
       key: item.key,
       name: item.label,
-      color: ceoChartColor(item.tone, index),
+      color: item.color || ceoChartColor(item.tone, index),
       gradientId: `${ceoChartKey(title, 0)}_${item.key}_${index}`,
       area: !!item.area,
-      dash: item.tone === "previous" ? "5 8" : undefined,
+      dash: item.dash || (item.tone === "previous" ? "5 8" : undefined),
+      strokeWidth: item.strokeWidth,
     }));
     const refValue = targetSeries ? { value: targetSeries.values[0], label: "Target" } : undefined;
     const config = ceoChartConfig("line", { data, series: chartSeries, refValue });
@@ -4916,7 +5032,7 @@
     return `
         <div class="ceo-scan-card-head">
           <div><span>${escapeHtml(title)}</span></div>
-          ${ceoRangePicker(title)}
+          ${fixedRange ? "" : ceoRangePicker(title)}
         </div>
         <div class="ceo-recharts-host ceo-recharts-host--trend" data-ceo-recharts="${config}" data-overview-chart-kind="trend" role="img" aria-label="${escapeHtml(title)}"></div>
         ${legend ? ceoChartLegend(series) : ""}
@@ -4932,11 +5048,102 @@
       max: options.max,
       unit: options.unit || "",
       legend: options.legend !== false,
+      fixedRange: !!options.fixedRange,
     };
 
     return `
       <article class="ceo-scan-card ceo-scan-card--chart" data-ceo-trend-key="${escapeHtml(ceoChartKey(spec.title, 0))}" data-ceo-trend-spec="${escapeHtml(JSON.stringify(spec))}">
         ${ceoTrendChartContent(spec)}
+      </article>
+    `;
+  }
+
+  function ceoDialysisSessionsChart() {
+    const timeline = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const scheduled = [45, 46, 44, 47, 46, 45, 48];
+    const delivered = [44, 46, 42, 46, 45, 43, 48];
+    const data = timeline.map((label, index) => {
+      const missed = Math.max(0, scheduled[index] - delivered[index]);
+      return {
+        name: label,
+        scheduled: scheduled[index],
+        delivered: delivered[index],
+        __tooltipRows: [
+          { label: "Delivered Sessions", value: delivered[index], display: String(delivered[index]), color: "var(--color-primary)" },
+          { label: "Scheduled Sessions", value: scheduled[index], display: String(scheduled[index]), color: "color-mix(in srgb, #f97316 22%, var(--color-surface))" },
+          { label: "Missed Sessions", value: missed, display: String(missed), color: missed ? "#f97316" : "#2fbf7f" },
+        ],
+      };
+    });
+    const config = ceoChartConfig("bullet", { data, domainMin: 30 });
+
+    return `
+      <article class="ceo-scan-card ceo-scan-card--chart ceo-scan-card--dialysis-bullet">
+        <div class="ceo-scan-card-head">
+          <div><span>Dialysis Sessions</span></div>
+        </div>
+        <div class="ceo-recharts-host ceo-recharts-host--trend ceo-recharts-host--dialysis-bullet" data-ceo-recharts="${config}" data-overview-chart-kind="dialysis-bullet" role="img" aria-label="Daily dialysis delivered sessions over scheduled sessions"></div>
+        <div class="ceo-scan-legend" aria-label="Chart legend">
+          <span><i class="ceo-scan-legend-dot" style="background:var(--color-primary);"></i>Delivered Sessions</span>
+          <span><i class="ceo-scan-legend-dot" style="background:color-mix(in srgb, #f97316 22%, var(--color-surface));"></i>Scheduled Sessions</span>
+        </div>
+      </article>
+    `;
+  }
+
+  function ceoCapacityEfficiencyChart(occupancyValues, networkAlos) {
+    const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const rawOccupancy = ceoDailyValues(occupancyValues || []).slice(0, 7).map((value) => Math.max(0, Math.min(100, Number(value || 0))));
+    const dailyOccupancy = rawOccupancy.map((value, index) => {
+      const normalized = value < 65 ? 72 + value * 0.28 : value;
+      const dailyShape = [-2.4, -0.8, 1.2, 3.4, 0.2, -1.1, 2.1][index] || 0;
+      return Math.max(64, Math.min(92, normalized + dailyShape));
+    });
+    const baseAlos = Number(networkAlos || zyephrDerived?.network?.alos || 4.3);
+    const occupancyAverage = dailyOccupancy.reduce((sum, value) => sum + value, 0) / Math.max(dailyOccupancy.length, 1);
+    const alosValues = dailyOccupancy.map((value, index) => {
+      const pressureDrift = (value - occupancyAverage) * 0.035;
+      const cadenceDrift = [-0.22, -0.08, 0.12, 0.32, 0.04, -0.18, 0.16][index] || 0;
+      return Math.max(3.2, Math.min(5.8, baseAlos + pressureDrift + cadenceDrift));
+    });
+    const data = labels.map((label, index) => ({
+      name: label,
+      occupancy: Number(dailyOccupancy[index].toFixed(1)),
+      alos: Number(alosValues[index].toFixed(2)),
+      __tooltipRows: [
+        {
+          label: "Bed occupancy",
+          value: Number(dailyOccupancy[index].toFixed(1)),
+          display: `${dailyOccupancy[index].toFixed(1)}%`,
+          color: "var(--color-primary)",
+        },
+        {
+          label: "ALOS",
+          value: Number(alosValues[index].toFixed(2)),
+          display: `${alosValues[index].toFixed(2)}d`,
+          color: "#f97316",
+        },
+      ],
+    }));
+    const config = ceoChartConfig("capacity", { data, target: 85 });
+
+    return `
+      <article class="ceo-scan-card ceo-capacity-efficiency-card">
+        <div class="ceo-scan-card-head">
+          <div>
+            <span>Capacity & Efficiency</span>
+          </div>
+        </div>
+        <div class="ceo-capacity-recharts-frame">
+          <span class="ceo-capacity-axis-label ceo-capacity-axis-label--left">Bed occupancy</span>
+          <div class="ceo-recharts-host ceo-recharts-host--capacity" data-ceo-recharts="${config}" data-overview-chart-kind="capacity" role="img" aria-label="Daily bed occupancy bars and ALOS trend line"></div>
+          <span class="ceo-capacity-axis-label ceo-capacity-axis-label--right">ALOS</span>
+        </div>
+        <div class="ceo-capacity-legend">
+          <span><i class="is-bar"></i> Bed occupancy</span>
+          <span><i class="is-line"></i> ALOS</span>
+          <span><i class="is-target"></i> Target</span>
+        </div>
       </article>
     `;
   }
@@ -4999,9 +5206,10 @@
   }
 
   function ceoBranchContributionDonutContent(rows, totalRevenue) {
-    const total = Number(totalRevenue || rows.reduce((sum, row) => sum + Number(row.revenue || 0), 0) || 1);
+    const sortedRows = [...rows].sort((a, b) => Number(b.revenue || 0) - Number(a.revenue || 0));
+    const total = Number(totalRevenue || sortedRows.reduce((sum, row) => sum + Number(row.revenue || 0), 0) || 1);
     let offset = 0;
-    const branchSegments = rows.map((row, index) => {
+    const branchSegments = sortedRows.map((row, index) => {
       const revenue = Number(row.revenue || 0);
       const share = Math.max(0, (revenue / total) * 100);
       const start = offset;
@@ -5019,27 +5227,29 @@
         ],
       };
     });
-    const segments = branchSegments.map((segment) => `${segment.color} ${segment.start.toFixed(2)}% ${segment.end.toFixed(2)}%`);
+    const segments = ceoDonutGradientSegments(branchSegments);
+    const leader = sortedRows.reduce(
+      (best, row) => (Number(row.revenue || 0) > Number(best.revenue || 0) ? row : best),
+      sortedRows[0] || {},
+    );
+    const leaderShare = total > 0 ? (Number(leader.revenue || 0) / total) * 100 : 0;
 
     return `
       <div class="ceo-branch-donut-layout">
-        <div class="ceo-branch-donut" style="--donut:${escapeHtml(segments.join(", "))};" role="img" aria-label="Revenue contribution by branch" data-ceo-branch-donut-segments="${escapeHtml(JSON.stringify(branchSegments))}">
+        <div class="ceo-branch-donut" style="--donut:${escapeHtml(segments)};" role="img" aria-label="Revenue contribution by branch" data-ceo-branch-donut-segments="${escapeHtml(JSON.stringify(branchSegments))}">
           <div>
-            <strong>${escapeHtml(formatInrCr(total))}</strong>
-            <span>Network revenue</span>
+            <strong>${escapeHtml(`${leaderShare.toFixed(1)}%`)}</strong>
+            <span>${escapeHtml(leader.name || leader.branch || "Top branch")}</span>
           </div>
         </div>
         <div class="ceo-branch-donut-legend">
-          ${rows
+          ${sortedRows
             .map((row, index) => {
               const revenue = Number(row.revenue || 0);
               const share = (revenue / total) * 100;
               const color = ceoBranchColor(row.name || row.branch, index);
               return `
-                <div class="ceo-branch-donut-row" style="--branch-color:${escapeHtml(color)};" ${ceoTooltipAttrs(row.name || row.branch, [
-                  { label: "Share", display: `${share.toFixed(1)}%`, color },
-                  { label: "Revenue", display: formatInrCr(revenue), color },
-                ])}>
+                <div class="ceo-branch-donut-row" style="--branch-color:${escapeHtml(color)};">
                   <i></i>
                   <span>${escapeHtml(row.name || row.branch)}</span>
                   <strong>${escapeHtml(`${share.toFixed(1)}%`)}</strong>
@@ -5052,19 +5262,122 @@
     `;
   }
 
+  function ceoDonutGradientSegments(segments) {
+    const gapPercent = 0.42;
+    return segments
+      .flatMap((segment) => {
+        const start = Number(segment.start || 0);
+        const end = Number(segment.end || 0);
+        const size = Math.max(0, end - start);
+        const gap = Math.min(gapPercent, size / 4);
+        const visualStart = start + gap / 2;
+        const visualEnd = end - gap / 2;
+        return [
+          `var(--color-surface) ${start.toFixed(2)}% ${visualStart.toFixed(2)}%`,
+          `${segment.color} ${visualStart.toFixed(2)}% ${visualEnd.toFixed(2)}%`,
+          `var(--color-surface) ${visualEnd.toFixed(2)}% ${end.toFixed(2)}%`,
+        ];
+      })
+      .join(", ");
+  }
+
+  function ceoRevenueDonutContent({ rows, total, ariaLabel }) {
+    const sortedRows = [...rows].sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
+    const safeTotal = Math.max(1, Number(total || sortedRows.reduce((sum, row) => sum + Number(row.value || 0), 0) || 1));
+    const leader = sortedRows.reduce(
+      (best, row) => (Number(row.value || 0) > Number(best.value || 0) ? row : best),
+      sortedRows[0] || {},
+    );
+    const leaderShare = (Number(leader.value || 0) / safeTotal) * 100;
+    let offset = 0;
+    const segmentDetails = sortedRows.map((row) => {
+        const share = Math.max(0, (Number(row.value || 0) / safeTotal) * 100);
+        const start = offset;
+        const end = offset + share;
+        offset += share;
+        return {
+          start,
+          end,
+          color: row.color,
+          title: row.label,
+          rows: [
+            { label: "Revenue", display: formatInrCr(row.value), color: row.color },
+            { label: "Share", display: `${share.toFixed(1)}%`, color: row.color },
+          ],
+        };
+      });
+    const segments = ceoDonutGradientSegments(segmentDetails);
+
+    return `
+      <div class="ceo-branch-donut-layout">
+        <div class="ceo-driver-donut" style="--driver-donut:${escapeHtml(segments)};" role="img" aria-label="${escapeHtml(ariaLabel)}" data-ceo-branch-donut-segments="${escapeHtml(JSON.stringify(segmentDetails))}">
+          <div>
+            <strong>${escapeHtml(`${leaderShare.toFixed(1)}%`)}</strong>
+            <span>${escapeHtml(leader.label || "Top segment")}</span>
+          </div>
+        </div>
+        <div class="ceo-branch-donut-legend">
+          ${sortedRows
+            .map((row) => {
+              const share = (Number(row.value || 0) / safeTotal) * 100;
+              return `
+                <div class="ceo-branch-donut-row" style="--branch-color:${escapeHtml(row.color)};">
+                  <i></i>
+                  <span>${escapeHtml(row.label)}</span>
+                  <strong>${escapeHtml(`${share.toFixed(1)}%`)}</strong>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function ceoServiceLineRevenueRows(serviceLines, totalRevenue) {
+    const sourceRows = Array.isArray(serviceLines) ? serviceLines : [];
+    const valueFor = (matcher) => sourceRows.filter((row) => matcher(String(row.name || ""))).reduce((sum, row) => sum + Number(row.value || 0), 0);
+    const sourceTotal = sourceRows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+    const total = Number(sourceTotal || totalRevenue || 1);
+    const maintenanceDialysis = valueFor((name) => /dialysis/i.test(name));
+    const transplant = valueFor((name) => /transplant|surgical|vascular/i.test(name));
+    const generalNephrologyIpd = valueFor((name) => /ipd|ward/i.test(name));
+    const opd = Math.max(0, total - maintenanceDialysis - transplant - generalNephrologyIpd);
+
+    return [
+      { label: "Maintenance Dialysis", value: maintenanceDialysis, color: ceoBranchPalette[0] },
+      { label: "Transplant", value: transplant, color: ceoBranchPalette[1] },
+      { label: "General Nephrology IPD", value: generalNephrologyIpd, color: ceoBranchPalette[2] },
+      { label: "OPD", value: opd, color: ceoBranchPalette[3] },
+    ];
+  }
+
+  function ceoPayorRevenueRows(payerMix, totalRevenue) {
+    const sourceRows = Array.isArray(payerMix) ? payerMix : [];
+    const valueFor = (matcher) => sourceRows.filter((row) => matcher(String(row.name || ""))).reduce((sum, row) => sum + Number(row.value || 0), 0);
+    const sourceTotal = sourceRows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+    const total = Number(sourceTotal || totalRevenue || 1);
+    const cash = valueFor((name) => /self|cash/i.test(name));
+    const governmentSchemes = valueFor((name) => /government|cghs|echs|pmjay/i.test(name));
+    const privateInsurance = Math.max(0, total - cash - governmentSchemes);
+
+    return [
+      { label: "Cash", value: cash, color: ceoBranchPalette[0] },
+      { label: "Private Insurance", value: privateInsurance, color: ceoBranchPalette[1] },
+      { label: "Government Schemes", value: governmentSchemes, color: ceoBranchPalette[2] },
+    ];
+  }
+
   function ceoDriverCarouselCard(rows, totalRevenue, opVisits, ipAdmissions, serviceLines) {
-    const opTotal = opVisits.reduce((sum, value) => sum + Number(value || 0), 0);
-    const ipTotal = ipAdmissions.reduce((sum, value) => sum + Number(value || 0), 0);
-    const volumeTotal = Math.max(1, opTotal + ipTotal);
-    const opShare = (opTotal / volumeTotal) * 100;
-    const ipShare = (ipTotal / volumeTotal) * 100;
-    const departmentRows = (serviceLines || []).slice(0, 5);
-    const maxDepartmentValue = Math.max(...departmentRows.map((row) => Number(row.value || 0)), 1);
+    const serviceRows = ceoServiceLineRevenueRows(serviceLines, totalRevenue);
+    const serviceTotal = serviceRows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+    const payorRows = ceoPayorRevenueRows(zyephrDerived?.payerMix || [], totalRevenue);
+    const payorTotal = payorRows.reduce((sum, row) => sum + Number(row.value || 0), 0);
 
     return `
       <article class="ceo-scan-card ceo-scan-card--drivers" data-ceo-driver-carousel>
         <div class="ceo-scan-card-head">
-          <div><span data-ceo-driver-title>Branch contribution</span></div>
+          <div><span data-ceo-driver-title>Revenue by Service Line</span></div>
           <div class="ceo-carousel-controls" aria-label="Revenue driver carousel controls">
             <button type="button" data-ceo-driver-prev aria-label="Previous driver">${hrmsSidebarIcon("chevron-left")}</button>
             <strong><span data-ceo-driver-index>1</span> / 3</strong>
@@ -5072,54 +5385,22 @@
           </div>
         </div>
         <div class="ceo-driver-slides">
-          <section class="ceo-driver-slide ceo-driver-slide--branch is-active" data-ceo-driver-slide="0" data-ceo-driver-label="Branch contribution">
+          <section class="ceo-driver-slide is-active" data-ceo-driver-slide="0" data-ceo-driver-label="Revenue by Service Line">
+            ${ceoRevenueDonutContent({
+              rows: serviceRows,
+              total: serviceTotal,
+              ariaLabel: "Revenue by service line",
+            })}
+          </section>
+          <section class="ceo-driver-slide ceo-driver-slide--branch" data-ceo-driver-slide="1" data-ceo-driver-label="Branch Contribution" hidden>
             ${ceoBranchContributionDonutContent(rows, totalRevenue)}
           </section>
-          <section class="ceo-driver-slide" data-ceo-driver-slide="1" data-ceo-driver-label="OP/IP mix" hidden>
-            <div class="ceo-driver-donut" style="--driver-donut:#18a9b8 0 ${opShare.toFixed(2)}%, #4f7fa8 ${opShare.toFixed(2)}% 100%;" ${ceoTooltipAttrs("Patient volume", [{ label: "Total", display: Number(volumeTotal).toLocaleString("en-IN"), color: "var(--color-primary)" }])}>
-              <div>
-                <strong>${escapeHtml(Number(volumeTotal).toLocaleString("en-IN"))}</strong>
-                <span>Patient volume</span>
-              </div>
-            </div>
-            <div class="ceo-driver-mix">
-              <div style="--driver-color:#18a9b8;" ${ceoTooltipAttrs("OP visits", [
-                { label: "Volume", display: Number(opTotal).toLocaleString("en-IN"), color: "#18a9b8" },
-                { label: "Share", display: `${opShare.toFixed(1)}%`, color: "#18a9b8" },
-              ])}>
-                <i></i>
-                <span>OP visits</span>
-                <strong>${escapeHtml(Number(opTotal).toLocaleString("en-IN"))}</strong>
-                <em>${escapeHtml(`${opShare.toFixed(1)}%`)}</em>
-              </div>
-              <div style="--driver-color:#4f7fa8;" ${ceoTooltipAttrs("IP admissions", [
-                { label: "Volume", display: Number(ipTotal).toLocaleString("en-IN"), color: "#4f7fa8" },
-                { label: "Share", display: `${ipShare.toFixed(1)}%`, color: "#4f7fa8" },
-              ])}>
-                <i></i>
-                <span>IP admissions</span>
-                <strong>${escapeHtml(Number(ipTotal).toLocaleString("en-IN"))}</strong>
-                <em>${escapeHtml(`${ipShare.toFixed(1)}%`)}</em>
-              </div>
-            </div>
-          </section>
-          <section class="ceo-driver-slide" data-ceo-driver-slide="2" data-ceo-driver-label="Department contributors" hidden>
-            <div class="ceo-department-bars">
-              ${departmentRows
-                .map((row, index) => {
-                  const color = ceoBranchPalette[index % ceoBranchPalette.length];
-                  return `
-                    <div class="ceo-department-row" style="--driver-color:${escapeHtml(color)}; --bar-width:${Math.max(5, (Number(row.value || 0) / maxDepartmentValue) * 100).toFixed(2)}%;" ${ceoTooltipAttrs(row.name, [
-                      { label: "Revenue", display: formatInrCr(row.value), color },
-                    ])}>
-                      <span>${escapeHtml(row.name)}</span>
-                      <i><b></b></i>
-                      <strong>${escapeHtml(formatInrCr(row.value))}</strong>
-                    </div>
-                  `;
-                })
-                .join("")}
-            </div>
+          <section class="ceo-driver-slide" data-ceo-driver-slide="2" data-ceo-driver-label="Revenue by Payor Mix" hidden>
+            ${ceoRevenueDonutContent({
+              rows: payorRows,
+              total: payorTotal,
+              ariaLabel: "Revenue by payor mix",
+            })}
           </section>
         </div>
       </article>
@@ -5129,6 +5410,7 @@
   function ceoSnapshotTable(title, summary, headers, rows) {
     const tableCell = (cell) => {
       if (cell && typeof cell === "object") {
+        if (cell.html) return cell.html;
         if (cell.pill) return v2Pill(cell.value);
         const delta = cell.delta ? `<em class="ceo-scan-delta ${String(cell.delta).trim().startsWith("-") ? "is-down" : "is-up"}">${escapeHtml(cell.delta)}</em>` : "";
         return `<span class="ceo-scan-metric-cell"><span>${escapeHtml(cell.value)}</span>${delta}</span>`;
@@ -5164,24 +5446,65 @@
     `;
   }
 
+  function ceoOccupancyHeatCell(value, delta) {
+    const numericValue = Math.max(0, Math.min(100, Number(value || 0)));
+    const tone = numericValue < 75 ? "red" : numericValue < 85 ? "amber" : "green";
+    const deltaMarkup = delta ? `<em class="ceo-scan-delta ${String(delta).trim().startsWith("-") ? "is-down" : "is-up"}">${escapeHtml(delta)}</em>` : "";
+    return {
+      html: `
+        <span class="ceo-occupancy-cell ceo-occupancy-cell--${tone}">
+          <span class="ceo-occupancy-cell__top">
+            <span>${escapeHtml(`${numericValue.toFixed(1)}%`)}</span>
+            ${deltaMarkup}
+          </span>
+          <span class="ceo-occupancy-heat" aria-hidden="true">
+            <i style="width:${numericValue.toFixed(1)}%"></i>
+          </span>
+        </span>
+      `,
+    };
+  }
+
+  function ceoNetworkSnapshotOccupancy(branch, index) {
+    const rawValue = Number(branch.occupancy || 0);
+    if (rawValue >= 65) return Math.max(62, Math.min(94, rawValue));
+    const displayValues = [91.2, 78.4, 58.6, 87.8, 72.4, 83.1];
+    return displayValues[index % displayValues.length];
+  }
+
+  function ceoBranchArpob(branch, index) {
+    const value = Math.round((Number(branch.revenue || 0) * 10000000) / Math.max(1, Number(branch.opd || 0) + Number(branch.ip || 0) * 3));
+    const fallback = [42500, 41700, 40200, 38900, 37600, 36800][index % 6];
+    return Number.isFinite(value) && value > 0 ? Math.max(32000, Math.min(52000, value)) : fallback;
+  }
+
+  function ceoDialysisScheduleCell(branch, index) {
+    const scheduled = [45, 44, 42, 40, 38, 36][index % 6];
+    const delivered = Math.max(0, Math.min(scheduled, Math.round(scheduled * (Number(branch.dialysis || 0) / 100))));
+    return `${delivered}/${scheduled}`;
+  }
+
+  function ceoNetworkSnapshotRisk(branch, occupancyValue) {
+    const margin = Number(branch.margin || 0);
+    const dialysis = Number(branch.dialysis || 0);
+    if (occupancyValue >= 85 && margin >= 21 && dialysis >= 90) return "Low";
+    if (occupancyValue < 65 || margin < 19 || dialysis < 78) return "High";
+    return "Medium";
+  }
+
   function executiveScoreMeter(score) {
     const numericScore = Math.max(0, Math.min(100, Number(score || 0)));
-    const totalSegments = 34;
+    const totalSegments = 33;
     const activeSegments = Math.round((numericScore / 100) * totalSegments);
     const centerX = 112;
     const centerY = 112;
     const innerRadius = 78;
     const outerRadius = 102;
-    const blend = (from, to, amount) => {
-      const fromRgb = from.match(/\w\w/g).map((part) => parseInt(part, 16));
-      const toRgb = to.match(/\w\w/g).map((part) => parseInt(part, 16));
-      return `#${fromRgb
-        .map((value, index) => Math.round(value + (toRgb[index] - value) * amount).toString(16).padStart(2, "0"))
-        .join("")}`;
-    };
-    const gradientColor = (progress) => {
-      if (progress <= 0.58) return blend("ef5b5b", "f4b451", progress / 0.58);
-      return blend("f4b451", "29b978", (progress - 0.58) / 0.42);
+    const bandColor = (index) => {
+      const bandSize = totalSegments / 3;
+      if (index < bandSize) return "var(--score-red)";
+      if (index < bandSize * 2) return "var(--score-yellow)";
+      return "var(--score-green)";
     };
     const segments = Array.from({ length: totalSegments }, (_, index) => {
       const progress = totalSegments === 1 ? 0 : index / (totalSegments - 1);
@@ -5190,7 +5513,7 @@
       const y1 = centerY - Math.sin(angle) * innerRadius;
       const x2 = centerX + Math.cos(angle) * outerRadius;
       const y2 = centerY - Math.sin(angle) * outerRadius;
-      const color = index >= activeSegments ? "var(--score-muted)" : gradientColor(progress);
+      const color = index >= activeSegments ? "var(--score-muted)" : bandColor(index);
       return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}"></line>`;
     }).join("");
     return `
@@ -5213,10 +5536,58 @@
     `;
   }
 
+  function executiveKpiIcon(label) {
+    const normalized = String(label || "").toLowerCase();
+    const common = `xmlns="http://www.w3.org/2000/svg" class="lucide executive-kpi-title-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"`;
+    if (normalized.includes("revenue")) {
+      return `<svg ${common}><path d="M6 3h12"></path><path d="M6 8h12"></path><path d="m6 13 8.5 8"></path><path d="M6 13h3"></path><path d="M9 13c6.667 0 6.667-10 0-10"></path></svg>`;
+    }
+    if (normalized.includes("ebitda") || normalized.includes("margin")) {
+      return `<svg ${common}><path d="M16 7h6v6"></path><path d="m22 7-8.5 8.5-5-5L2 17"></path></svg>`;
+    }
+    if (normalized.includes("arpob")) {
+      return `<svg ${common}><path d="M2 4v16"></path><path d="M2 8h18a2 2 0 0 1 2 2v10"></path><path d="M2 17h20"></path><path d="M6 8v9"></path></svg>`;
+    }
+    if (normalized.includes("opd") || normalized.includes("visit")) {
+      return `<svg ${common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`;
+    }
+    if (normalized.includes("ipd") || normalized.includes("admission")) {
+      return `<svg ${common}><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><path d="m10 17 5-5-5-5"></path><path d="M15 12H3"></path></svg>`;
+    }
+    if (normalized.includes("alos")) {
+      return `<svg ${common}><path d="M8 2v4"></path><path d="M16 2v4"></path><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M3 10h18"></path><path d="M12 14v3l2 1"></path></svg>`;
+    }
+    if (normalized.includes("tat")) {
+      return `<svg ${common}><circle cx="12" cy="13" r="8"></circle><path d="M12 9v4l2.5 2.5"></path><path d="M9 2h6"></path></svg>`;
+    }
+    if (normalized.includes("pending")) {
+      return `<svg ${common}><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>`;
+    }
+    if (normalized.includes("staff") || normalized.includes("coverage")) {
+      return `<svg ${common}><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><path d="M20 8v6"></path><path d="M23 11h-6"></path></svg>`;
+    }
+    if (normalized.includes("equip") || normalized.includes("uptime")) {
+      return `<svg ${common}><rect x="3" y="4" width="18" height="14" rx="2"></rect><path d="M8 21h8"></path><path d="M12 18v3"></path><path d="m8 11 2 2 4-5"></path></svg>`;
+    }
+    if (normalized.includes("ot") || normalized.includes("utilization")) {
+      return `<svg ${common}><path d="M3 3v18h18"></path><rect x="7" y="12" width="3" height="5" rx="1"></rect><rect x="12" y="8" width="3" height="9" rx="1"></rect><rect x="17" y="5" width="3" height="12" rx="1"></rect></svg>`;
+    }
+    if (normalized.includes("dialysis")) {
+      return `<svg ${common}><path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z"></path><path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97"></path></svg>`;
+    }
+    if (normalized.includes("occupancy")) {
+      return `<svg ${common}><path d="M2 4v16"></path><path d="M2 8h18a2 2 0 0 1 2 2v10"></path><path d="M2 17h20"></path><path d="M6 8v9"></path></svg>`;
+    }
+    if (normalized.includes("conversion")) {
+      return `<svg ${common}><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M13 6h3a2 2 0 0 1 2 2v7"></path><path d="M11 18H8a2 2 0 0 1-2-2V9"></path></svg>`;
+    }
+    return `<svg ${common}><circle cx="12" cy="12" r="7"></circle><path d="M12 8v4l3 2"></path></svg>`;
+  }
+
   function executiveKpiCard({ label, value, change, tone = "up" }) {
     return `
       <article class="executive-kpi-card">
-        <span>${escapeHtml(label)}</span>
+        <span class="executive-kpi-title">${executiveKpiIcon(label)}<span>${escapeHtml(label)}</span></span>
         <div>
           <strong>${escapeHtml(value)}</strong>
           <em class="is-${escapeHtml(tone)}">${escapeHtml(change)}</em>
@@ -5271,7 +5642,7 @@
       <section class="ceo-scan-page" data-ceo-executive-overview="true">
         <article class="ceo-scan-summary ceo-scan-summary--stable">
           <div class="ceo-signal-copy">
-            <span class="ceo-signal-badge">Good morning, Sarah</span>
+            <span class="ceo-signal-badge">Good morning, Sarah!</span>
             <p>Revenue is <strong>${escapeHtml(formatSignedPercent(revenueDelta))}</strong> month over month and service volume is <strong>+6.2%</strong>; ${escapeHtml(leadingBranches)} lead network contribution.</p>
             <div class="ceo-signal-actions">
               <a href="/finance?tab=revenue-analysis" class="ceo-signal-cta dashboard-link-action">View breakdown <span aria-hidden="true">→</span></a>
@@ -5321,7 +5692,7 @@
               tone: "down",
             },
             {
-              label: "Service Conversion",
+              label: "OPD → IPD Conversion",
               value: "38.4%",
               change: "↑ 4.1 pts",
               tone: "up",
@@ -5338,31 +5709,33 @@
             unit: "₹Cr",
             series: [
               { label: "Current period", values: revenue, tone: "primary", area: true, smooth: true },
-              { label: "Previous period", values: revenuePrevious, tone: "previous", smooth: true },
+              { label: previousComparisonLabel(), values: revenuePrevious, tone: "previous", smooth: true },
               { label: "Target", values: revenueTarget, tone: "target" },
             ],
           })}
           ${ceoDriverCarouselCard(v2Branches, networkRevenue, opVisits, ipAdmissions, zyephrDerived?.serviceLines || [])}
-          ${ceoBranchBarChart("Branch occupancy", v2Branches, "occupancy", "%")}
-          ${ceoBranchBarChart("Patient volume by branch", volumeByBranch, "volume")}
+          ${ceoCapacityEfficiencyChart(occupancy, network.alos)}
+          ${ceoDialysisSessionsChart()}
         </section>
 
         ${ceoSnapshotTable(
           "Network snapshot",
           "",
-          ["Branch", "Revenue", "EBITDA margin", "Occupancy", "Patient volume", "Growth", "Revenue contribution", "Risk"],
-          v2Branches.map((branch) => {
-            const volume = ceoVolumeRows.find((row) => row.branch === branch.name);
+          ["Branch", "Revenue", "EBITDA margin", "Occupancy", "ARPOB", "Dialysis", "Risk"],
+          v2Branches.map((branch, index) => {
             const delta = branchDeltas[branch.name] || {};
+            const arpob = ceoBranchArpob(branch, index);
+            const arpobDelta = ["+3.4%", "+2.8%", "+1.6%", "-0.9%", "-1.8%", "-2.2%"][index % 6];
+            const occupancyValue = ceoNetworkSnapshotOccupancy(branch, index);
+            const risk = ceoNetworkSnapshotRisk(branch, occupancyValue);
             return [
               branch.name,
               { value: `₹${branch.revenue.toFixed(1)}Cr`, delta: delta.revenue },
               { value: `${branch.margin.toFixed(1)}%`, delta: delta.margin },
-              { value: `${branch.occupancy.toFixed(1)}%`, delta: delta.occupancy },
-              { value: volume ? (volume.op + volume.ip).toLocaleString("en-IN") : "-", delta: volume ? `${volume.growth > 0 ? "+" : ""}${volume.growth.toFixed(1)}%` : "" },
-              volume ? `${volume.growth > 0 ? "+" : ""}${volume.growth.toFixed(1)}%` : "-",
-              { value: volume ? `${volume.revenue}%` : "-", delta: delta.contribution },
-              { value: branch.risk, pill: true },
+              ceoOccupancyHeatCell(occupancyValue, delta.occupancy),
+              { value: `₹${Number(arpob).toLocaleString("en-IN")}`, delta: arpobDelta },
+              ceoDialysisScheduleCell(branch, index),
+              { value: risk, pill: true },
             ];
           }),
         )}
@@ -5426,31 +5799,182 @@
     return true;
   }
 
+  function cooStatusDot(tone = "online") {
+    return `<i class="coo-status-dot coo-status-dot--${escapeHtml(tone)}" aria-hidden="true"></i>`;
+  }
+
+  function cooLiveBedHeatmap(branches) {
+    const data = branches.map((branch, index) => {
+      const occupancyValue = Number(branch.occupancy || 0) >= 65 ? Number(branch.occupancy || 0) : [91.2, 78.4, 86.6, 83.8][index % 4];
+      const blocked = branch.risk === "High" ? 7 : branch.risk === "Medium" ? 4 : 2;
+      const cleaning = [3, 2, 4, 3][index % 4];
+      const occupied = Math.max(0, Math.min(100 - cleaning - blocked, occupancyValue));
+      const available = Math.max(0, 100 - occupied - cleaning - blocked);
+
+      return {
+        name: branch.name,
+        occupied: Number(occupied.toFixed(1)),
+        cleaning,
+        available: Number(available.toFixed(1)),
+        blocked,
+      };
+    });
+    const config = ceoChartConfig("bedStack", { data });
+
+    return `
+      <article class="ceo-scan-card coo-action-card coo-bed-heatmap">
+        <div class="ceo-scan-card-head">
+          <div><span>Live Bed Heatmap</span></div>
+        </div>
+        <div class="coo-bed-legend" aria-label="Bed status legend">
+          <span>${cooStatusDot("occupied")}Occupied</span>
+          <span><i class="coo-status-dot coo-status-dot--bed-cleaning" aria-hidden="true"></i>Cleaning</span>
+          <span><i class="coo-status-dot coo-status-dot--bed-available" aria-hidden="true"></i>Available</span>
+          <span>${cooStatusDot("blocked")}Blocked</span>
+        </div>
+        <div class="coo-bed-recharts-frame">
+          <div class="ceo-recharts-host coo-recharts-host--beds" data-ceo-recharts="${config}" data-overview-chart-kind="bed-stack" role="img" aria-label="Live bed heatmap stacked by branch"></div>
+        </div>
+      </article>
+    `;
+  }
+
+  function cooDischargePipeline(branches) {
+    const blockers = ["Waiting on Finance", "Insurance approval", "Pharmacy clearance", "Doctor sign-off", "Transport pending"];
+    const patients = branches.flatMap((branch, index) => [
+      {
+        branch: branch.name,
+        patient: `PT-${String(index + 1).padStart(2, "0")}8${index}`,
+        wait: 88 - index * 9,
+        blocker: blockers[index % blockers.length],
+        owner: index % 2 === 0 ? "Billing desk" : "Floor coordinator",
+      },
+      {
+        branch: branch.name,
+        patient: `PT-${String(index + 4).padStart(2, "0")}4${index}`,
+        wait: 72 - index * 7,
+        blocker: blockers[(index + 2) % blockers.length],
+        owner: index % 2 === 0 ? "Insurance desk" : "Pharmacy",
+      },
+    ])
+      .sort((a, b) => b.wait - a.wait)
+      .slice(0, 5);
+
+    return `
+      <article class="ceo-scan-card coo-action-card">
+        <div class="ceo-scan-card-head">
+          <div><span>Discharge Pipeline</span></div>
+        </div>
+        <div class="coo-queue-list">
+          ${patients
+            .map(
+              (item) => `
+                <div class="coo-queue-row">
+                  <div>
+                    <strong>${escapeHtml(item.patient)} · ${escapeHtml(item.branch)}</strong>
+                    <span>${escapeHtml(item.blocker)}</span>
+                  </div>
+                  <em>${escapeHtml(`${item.wait}m`)}</em>
+                  <small>${escapeHtml(item.owner)}</small>
+                </div>
+              `,
+            )
+            .join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function cooOtBoard(branches) {
+    const otRows = [
+      { room: "OT 1", status: "Running on time", progress: 82, tone: "available", branch: branches[0]?.name || "Whitefield" },
+      { room: "OT 2", status: "Delayed by 45 mins", progress: 64, tone: "cleaning", branch: branches[1]?.name || "Jayanagar" },
+      { room: "OT 3", status: "Idle · next case 3:40 PM", progress: 28, tone: "blocked", branch: branches[2]?.name || "Hebbal" },
+      { room: "OT 4", status: "Turnover cleaning", progress: 48, tone: "occupied", branch: branches[3]?.name || "Electronic City" },
+    ];
+
+    return `
+      <article class="ceo-scan-card coo-action-card">
+        <div class="ceo-scan-card-head">
+          <div><span>OT Board</span></div>
+        </div>
+        <div class="coo-resource-list">
+          ${otRows
+            .map(
+              (item) => `
+                <div class="coo-resource-row">
+                  <div class="coo-live-row-head">
+                    <strong>${escapeHtml(item.room)} · ${escapeHtml(item.branch)}</strong>
+                    <span>${escapeHtml(item.status)}</span>
+                  </div>
+                  <div class="coo-progress" aria-hidden="true"><i style="width:${Number(item.progress).toFixed(0)}%"></i></div>
+                  <em data-tone="${escapeHtml(item.tone)}">${cooStatusDot(item.tone)}${escapeHtml(`${item.progress}% used`)}</em>
+                </div>
+              `,
+            )
+            .join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function cooEquipmentStatus(branches) {
+    const items = [
+      { name: "Dialysis Machines", detail: `${branches[0]?.name || "Whitefield"} Unit 4 - Down`, value: "1 Down", tone: "blocked" },
+      { name: "Ventilators", detail: "ICU fleet online across branches", value: "Online", tone: "available" },
+      { name: "Monitors", detail: `${branches[2]?.name || "Hebbal"} telemetry bay needs swap`, value: "1 Watch", tone: "cleaning" },
+      { name: "RO Plant", detail: `${branches[1]?.name || "Jayanagar"} evening dialysis ready`, value: "Online", tone: "available" },
+    ];
+
+    return `
+      <article class="ceo-scan-card coo-action-card">
+        <div class="ceo-scan-card-head">
+          <div><span>Critical Equipment Status</span></div>
+        </div>
+        <div class="coo-equipment-list">
+          ${items
+            .map(
+              (item) => `
+                <div class="coo-equipment-row">
+                  <div>${cooStatusDot(item.tone)}<strong>${escapeHtml(item.name)}</strong></div>
+                  <em data-tone="${escapeHtml(item.tone)}">${escapeHtml(item.value)}</em>
+                  <span>${escapeHtml(item.detail)}</span>
+                </div>
+              `,
+            )
+            .join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function cooOperationsLogRows(branches) {
+    const departments = ["Bed Management", "Discharge Desk", "Theatre Ops", "Dialysis"];
+    const bottlenecks = ["No ICU beds after 2 PM", "Finance clearance queue", "OT 2 delayed 45 mins", "Machine Unit 4 down"];
+    const staffing = ["Short 2 ICU nurses", "Covered", "Short 1 scrub nurse", "Evening tech backup needed"];
+    const alerts = [5, 3, 4, 2];
+    const risks = ["High", "Medium", "Medium", "Low"];
+
+    return branches.map((branch, index) => [
+      branch.name,
+      departments[index % departments.length],
+      alerts[index % alerts.length],
+      staffing[index % staffing.length],
+      bottlenecks[index % bottlenecks.length],
+      { value: risks[index % risks.length], pill: true },
+    ]);
+  }
+
   function cooExecutiveOverviewMarkup() {
-    const network = zyephrDerived?.network || {};
-    const monthly = zyephrDerived?.monthly || [];
-    const fallbackMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
-    const months = monthly.length ? monthly.map((row) => row.label) : fallbackMonths;
-    const dialysisTrend = monthly.length ? monthly.map((row) => row.dialysis || 0) : [6200, 5980, 6420, 6350, 6680, 6900];
-    const opdTrend = monthly.length ? monthly.map((row) => row.opd || 0) : [10800, 11640, 12120, 11980, 12680, 13240];
-    const ipTrend = monthly.length ? monthly.map((row) => row.ip || 0) : [1180, 1240, 1290, 1320, 1360, 1410];
-    const otTrend = monthly.length ? monthly.map((row) => row.ot || 0) : [210, 224, 232, 228, 241, 252];
     const focus = derivedRiskBranches(2);
     const focusCopy = focus.length ? focus.map((branch) => branch.name).join(" and ") : "branch operations";
-    const averageBranchMetric = (key) => {
-      const values = v2Branches.map((branch) => Number(branch[key] || 0)).filter((value) => Number.isFinite(value) && value > 0);
-      if (!values.length) return 0;
-      return values.reduce((sum, value) => sum + value, 0) / values.length;
-    };
-    const otOnTime = averageBranchMetric("otOnTime");
-    const edDoorToDoctor = averageBranchMetric("edDoorToDoctor");
-    const dialysisComplicationRate = averageBranchMetric("dialysisComplicationRate");
+    const liveBranches = v2Branches.slice(0, 4);
 
     return `
       <section class="ceo-scan-page" data-coo-executive-overview="true">
         <article class="ceo-scan-summary ceo-scan-summary--attention">
           <div class="ceo-signal-copy">
-            <span class="ceo-signal-badge">Good morning, Sarah</span>
+            <span class="ceo-signal-badge">Good morning, Sarah!</span>
             <p>Patient flow is stable across <strong>${escapeHtml(String(v2Branches.length))} branches</strong>; ${escapeHtml(focusCopy)} need closer operations review.</p>
             <div class="ceo-signal-actions">
               <a href="/operations?tab=patient-flow" class="ceo-signal-cta dashboard-link-action">Review operations <span aria-hidden="true">→</span></a>
@@ -5470,6 +5994,12 @@
           },
           kpis: [
             {
+              label: "Bed Occupancy",
+              value: "82%",
+              change: "↑ 4 pts",
+              tone: "warn",
+            },
+            {
               label: "OPD Visits",
               value: "1,284",
               change: "↑ 8.0%",
@@ -5482,85 +6012,50 @@
               tone: "warn",
             },
             {
-              label: "Bed Occupancy / BOR",
-              value: "82%",
-              change: "↑ 6 pts",
-              tone: "warn",
-            },
-            {
               label: "ALOS",
-              value: "4.1 days",
-              change: "↓ 0.3 days",
-              tone: "up",
+              value: "4.1",
+              change: "↑ 0.3 days",
+              tone: "down",
             },
             {
-              label: "Discharge TAT",
-              value: "3.8 hrs",
-              change: "↓ 0.6 hrs",
-              tone: "up",
-            },
-            {
-              label: "Discharges Pending",
+              label: "Pending Discharges",
               value: "42",
               change: "↑ 8",
               tone: "down",
             },
             {
-              label: "Staff Coverage",
-              value: "91%",
-              change: "↓ 4 pts",
+              label: "Discharge TAT",
+              value: "3.8 hrs",
+              change: "↑ 0.6 hrs",
               tone: "down",
             },
             {
-              label: "Dialysis Utilization",
+              label: "Equip. Uptime",
+              value: "94%",
+              change: "2 Down",
+              tone: "down",
+            },
+            {
+              label: "OT Utilization",
               value: "76%",
-              change: "↓ 6 pts",
+              change: "↓ 5 pts",
               tone: "down",
             },
           ],
         })}
 
-        <section class="ceo-scan-grid">
-          ${ceoTrendChart({
-            title: "Dialysis throughput",
-            labels: months,
-            min: 0,
-            max: Math.max(...dialysisTrend, 1),
-            series: [
-              { label: "Sessions", values: dialysisTrend, tone: "primary", area: true, smooth: true },
-              { label: "OT cases", values: otTrend, tone: "previous", smooth: true },
-            ],
-          })}
-          ${ceoTrendChart({
-            title: "Patient flow",
-            labels: months,
-            min: 0,
-            max: Math.max(...opdTrend, 1),
-            series: [
-              { label: "OPD visits", values: opdTrend, tone: "primary", area: true, smooth: true },
-              { label: "IP admissions", values: ipTrend, tone: "previous", smooth: true },
-            ],
-          })}
-          ${ceoBranchBarChart("Equipment uptime", v2Branches, "equipmentUptime", "%")}
-          ${ceoBranchBarChart("Staff fill rate", v2Branches, "staffing", "%")}
-          ${ceoBranchBarChart("ED door-to-doctor", v2Branches, "edDoorToDoctor", "m")}
-          ${ceoBranchBarChart("Dialysis completion", v2Branches, "dialysis", "%")}
+        <section class="ceo-scan-grid coo-live-action-grid">
+          ${cooLiveBedHeatmap(liveBranches)}
+          ${cooDischargePipeline(liveBranches)}
+          ${cooOtBoard(liveBranches)}
+          ${cooEquipmentStatus(liveBranches)}
         </section>
 
         ${ceoSnapshotTable(
-          "Operations snapshot",
-          "",
-          ["Branch", "OPD", "IPD", "ALOS", "Dialysis", "Uptime", "Staff Fill", "Risk"],
-          v2Branches.map((branch) => [
-            branch.name,
-            Number(branch.opd || 0).toLocaleString("en-IN"),
-            Number(branch.ip || 0).toLocaleString("en-IN"),
-            `${Number(branch.alos || 0).toFixed(2)}d`,
-            `${Number(branch.dialysis || 0).toFixed(1)}%`,
-            `${Number(branch.equipmentUptime || 0).toFixed(1)}%`,
-            `${Number(branch.staffing || 0).toFixed(1)}%`,
-            { value: branch.risk, pill: true },
-          ]),
+          "Live Operations Log",
+          "Who needs a call right now.",
+          ["Branch", "Department", "Unresolved Alerts", "Staffing Gaps", "Current Bottleneck", "Status"],
+          cooOperationsLogRows(liveBranches),
         )}
       </section>
     `;
@@ -8135,7 +8630,12 @@
         if (!control) return;
         const current = appState[control.kind];
         const currentIndex = control.options.indexOf(current);
-        appState[control.kind] = control.options[(currentIndex + 1) % control.options.length];
+        const nextOption = control.options[(currentIndex + 1) % control.options.length];
+        if (control.kind === "timeframe") {
+          setGlobalTimeframe(nextOption);
+        } else {
+          appState[control.kind] = nextOption;
+        }
         delete container.dataset.v2FoundationSignature;
         scheduleEnhance();
         return;
@@ -8154,7 +8654,7 @@
 
       if (reportTimeframeOption && container.contains(reportTimeframeOption)) {
         event.preventDefault();
-        appState.timeframe = reportTimeframeOption.dataset.v2ReportTimeframeOption || appState.timeframe;
+        setGlobalTimeframe(reportTimeframeOption.dataset.v2ReportTimeframeOption || appState.timeframe);
         closeV2LocalMenus(container);
         delete container.dataset.v2FoundationSignature;
         scheduleEnhance();
